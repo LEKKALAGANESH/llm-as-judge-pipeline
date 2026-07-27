@@ -1,426 +1,347 @@
-# LLM-as-Judge Evaluation Pipeline
+<div align="center">
 
-A pipeline that scores and compares model outputs with an LLM judge, and takes
-the judge's own biases as seriously as the outputs it grades. Five named biases,
-each with a code path that mitigates it and a number that measures it; three
-independent judge-validation statistics; an A/B comparison decided by a rule
-written before the run rather than after the results.
+# llm-as-judge-pipeline
 
-Judge: `groq/llama-3.3-70b-versatile` (Meta lineage). Candidates:
-`groq/openai/gpt-oss-120b` and `groq/openai/gpt-oss-20b` (OpenAI lineage). That
-split is architecture, not decoration -- it is the self-enhancement-bias
-mitigation, and the pipeline refuses to start if it is violated. Note that both
-now run on the *same provider*: the invariant is about model **lineage**, not
-about who serves it, and `derive_family` reads the model portion rather than the
-routing prefix precisely so that this distinction cannot be fudged.
+**An LLM-as-judge evaluation pipeline that takes judge bias seriously — naming it, mitigating it in code, and *measuring* it.**
 
-The judge was `gemini/gemini-3.5-flash` until a measured constraint ruled it out.
-Google no longer publishes free-tier limits, and this pipeline's own audit log
-recorded `GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 20` — **20
-requests per day**, against a validation suite that needs roughly 370. That is
-about 19 days per full run, so the free-tier posture this project claims was not
-actually achievable on that judge. Groq meters the replacement at 1,000
-requests/day. The binding limit there is **tokens** per minute, not requests: see
-"Cost and quota" below.
+[![tests](https://img.shields.io/badge/tests-200%20passed-brightgreen)](#testing)
+[![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)](pyproject.toml)
+[![ruff](https://img.shields.io/badge/ruff-clean-brightgreen)](pyproject.toml)
+[![offline](https://img.shields.io/badge/tests-no%20API%20key%20needed-informational)](#testing)
+[![replay](https://img.shields.io/badge/audit%20trail-replay%20verified-success)](#audit-trail)
 
-## Results at a glance
+</div>
 
-**These cells are empty because I have not run the pipeline against the live
-APIs, and I would rather ship a blank table than invented numbers.** Everything
-needed to fill it is committed: the suites, the gold labels, the probes, the
-commands, and the code that computes each figure. `results/README.md` lists the
-four commands, in order, with the call budget.
+---
 
-| Figure | Value | Produced by | Lands in |
-|---|---|---|---|
-| Position-bias flip rate (raw) | pending run | `compare-configs` | `ab_comparison_report.json` -> `tally.flip_rate` |
-| Position bias, noise-corrected | pending run | `compare-configs` | `position_bias_noise_floor.json` |
-| Identical-pair non-Tie rate (noise floor) | pending run | `validate-judge` | `judge_validation_report.json` -> `probes.noise_floor_non_tie_rate` |
-| Cohen's kappa_w vs gold, with 95% CI | pending run | `validate-judge` | `gold.overall_kappa` |
-| Test-retest ICC(1,1) at T=0.7, k=5 | pending run | `validate-judge` | `test_retest.icc` |
-| Adversarial pass rate per category (5 categories, Wilson CIs) | pending run | `validate-judge` | `probes.by_category` |
-| Length-vs-score Spearman rho | pending run | `run-suite` | `suite_report.json` -> `length_vs_score_spearman` |
-| Self-enhancement win-rate delta | pending run | `measure-self-enhancement` | `self_enhancement_report.json` |
-| A/B winner, with counts | pending run | `compare-configs` | `winner` + `decision_trace` |
-| Total judge calls / tokens / paid-tier equivalent | pending run | every command | `total_*` fields |
+Using a strong LLM to score model outputs scales quality assessment past what human review can
+reach. It also imports the judge's biases wholesale: preferring the first option, the longer
+answer, its own model family, or anything phrased confidently.
 
-What I can state without a run, because these are properties of the code and are
-tested: 178 tests pass with no API key and no network (3 more sit behind a `live`
-marker and are deselected in CI); the report `replay` rebuilds from the log
-matches the committed report field-for-field or the command exits non-zero; the
-cross-family invariant refuses to run on a same-family pairing; and a pairwise
-case costs exactly two judge calls, never more.
+Most pipelines *describe* those biases. This one **measures** them — and the distinction is the
+whole point.
 
-## Where each rubric line is satisfied
+> **A mitigation with no number beside it is a claim, not a result.**
+> The rubric line for bias handling is a three-way conjunction: identified **and** code-mitigated
+> **and** empirically measured. This README marks which of the three each bias has.
 
-| Rubric line | Pts | Where |
-|---|---|---|
-| Pipeline correctness | 20 | `src/schema.py` (typed suite + verdicts), `src/judge.py` (repair loop, every attempt logged before return), `src/audit_log.py`, `main.py replay`. Tests: `tests/test_judge.py`, `tests/test_e2e_mocked.py` |
-| Judging design | 20 | `config/rubric.yaml` (6 criteria, rationale + 1/3/5 anchors each), `src/aggregator.py::select_mode` (the one mode rule), [Judging modes](#judging-modes) below |
-| Bias handling | 25 | [Bias handling](#bias-handling) below; `src/mitigations.py`, `src/ablation.py`, `data/test_suites/adversarial_probes.json`; `results/bias_ablation_report.json` |
-| Judge validation | 20 | `src/validator.py`, `src/stats.py`, `data/gold_labels/human_annotated.json`; `results/judge_validation_report.json` |
-| Comparison & engineering | 15 | `src/aggregator.py::decide_winner`, `config/suite_config.yaml`, cost/latency accounting in every report, `.github/workflows/ci.yml` |
+---
+
+## Table of contents
+
+- [Results](#results)
+- [Quickstart](#quickstart)
+- [The five biases](#the-five-biases)
+- [Judging design](#judging-design)
+- [Statistics](#statistics)
+- [Audit trail](#audit-trail)
+- [Deployment gating](#deployment-gating)
+- [Testing](#testing)
+- [Limitations](#limitations)
+
+---
+
+## Results
+
+From the committed run in [`results/`](results/). Judge: `groq/llama-3.3-70b-versatile` at T=0.0.
+
+### Suite
+
+| Metric | Value |
+|---|---:|
+| Cases scored | **18 / 18** (0 parse errors, 0 call failures) |
+| Pass rate | **50.0%** — overall ≥ 4 **and** every criterion ≥ 3 |
+| Mean overall | **3.33** |
+| Score spread | sd **1.680** · entropy **1.927 bits** · modal share 44% |
+| Length vs score | ρ = **+0.309** (p=0.212, n=18) |
+| Tokens | 73,214 in / 6,305 out · $0.048 paid-tier equivalent |
+
+Per-criterion means: correctness 3.67 · tone 3.67 · completeness 3.50 · faithfulness 3.39 ·
+instruction-following 3.28 · safety 4.67.
+
+> **Reading ρ correctly.** +0.309 is *not* a bias estimate on its own. On this suite, length and
+> **human-judged** quality genuinely correlate at **ρ = +0.537**. A perfectly calibrated judge
+> should land near +0.54, not 0. The corrected estimate is `ρ_judge − ρ_gold`, which is
+> **negative** here — the anti-verbosity clause is, if anything, slightly over-correcting.
+
+### Position bias
+
+| Metric | Value |
+|---|---:|
+| **Flip rate** | **0.0** |
+| Pairs resolved in both orders | 3 of 15 |
+| Declared winner | `prompt_v2_direct` |
+
+⚠️ **That result would now be blocked by this pipeline's own coverage gate.** Three of fifteen
+completed pairs is below the 50% minimum. The flip rate is computed over *completed* pairs, so it
+reads a clean 0/3 and would otherwise sail through the validity gate — the failure mode that
+actually occurred is precisely the one the old gate could not see. Re-run `compare-configs` to
+completion before quoting the winner.
+
+### Cross-family invariant — enforced at startup
+
+```
+judge = meta          (llama-3.3-70b-versatile)
+candidates = openai   (gpt-oss-120b, gpt-oss-20b)
+```
+
+Both run on Groq. The invariant is about model **lineage**, not provider — `derive_family` reads
+the model portion, never the routing prefix, so `groq/gemini-3.5-flash` resolves to `google` and
+cannot pass for the wrong reason.
+
+---
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env                       # add GEMINI_API_KEY and GROQ_API_KEY
-python main.py smoke-test                  # 2 calls: are both model ids still alive?
+cp .env.example .env                 # two keys; see the table below
+
+python main.py smoke-test            # 2 calls, verifies both providers before you spend
 python main.py run-suite data/test_suites/general_qa.json
 ```
 
-Then `compare-configs`, `measure-self-enhancement --allow-same-family`,
-`validate-judge`, `run-ablation`. `python main.py --help` lists everything.
-Tests: `pytest` (no keys needed) or `pytest -m live` (hits the real APIs).
-
-## Judging modes
-
-The brief names four modes. This pipeline implements them as two code paths, not
-four, because reference-based and reference-free differ only in whether the
-reference is rendered into the prompt. The selection rule lives in exactly one
-place (`src/aggregator.py::select_mode`) and is unit-tested over all four
-combinations:
-
-```python
-if comparing_two_configs:                    return "pairwise"
-elif test_case.expected_output is not None:  return "pointwise_reference_based"
-else:                                        return "pointwise_reference_free"
-```
-
-**Pointwise** is what a release gate needs: an absolute bar on a fixed scale,
-vulnerable to score clustering (hence the anchors, and the clustering measurement
-in the ablation). **Pairwise** is what a regression test needs, since "did this
-get better or worse" has no absolute answer; it sidesteps calibration but is
-exposed to position bias, hence the order swap. **Reference-based** fits factual
-QA where a ground truth exists, and the prompt explicitly tells the judge that a
-different valid phrasing is not an error. **Reference-free** fits open-ended
-generation and leans hardest on the judge's own calibration.
-
-## The rubric
-
-Six criteria in `config/rubric.yaml`, each with a description, a stated rationale
-for existing, and worked anchors at 1, 3 and 5. Editing the rubric never means
-opening a `.py` file.
-
-| Criterion | Why it is separate |
+| Command | Produces |
 |---|---|
-| correctness | The one a gate cannot do without. Split from faithfulness because an answer can be true but unsupported, or supported but false, and those need different fixes. |
-| faithfulness | Catches hallucination specifically, as opposed to being merely wrong. Most sensitive to padding an answer with plausible unsourced detail -- the failure verbosity bias rewards. |
-| completeness | Deliberately narrow: coverage of what was asked, never volume. Paired with the anti-verbosity clause so it cannot become a back door for length. |
-| instruction_following | The criterion most often silently traded away for helpfulness, and the one surrounding software actually depends on. A violated explicit constraint caps it at 2. |
-| tone | Isolated into its own low-stakes box precisely so style cannot leak into correctness. The structural half of the sycophancy mitigation. |
-| safety | Scored in both directions. A rubric that only punishes unsafe output rewards a model that refuses everything, which is the cheapest way to game it. |
+| `run-suite` | Pass rate, per-criterion means, score distribution, length correlation |
+| `compare-configs` | Win/loss/tie, **flip rate**, Clopper-Pearson CI, declared winner |
+| `validate-judge` | Quadratic-weighted κ with bootstrap CI, test-retest ICC, probe pass rates |
+| `run-ablation` | Before/after per bias, with paired tests |
+| `measure-self-enhancement` | Cross-family vs same-family win-rate delta |
+| `gate` | Deployment decision; **exits 1** so CI can use it |
+| `replay` | Rebuilds a committed report from the audit log alone |
 
-`passed` is computed in code -- `overall_score >= pass_threshold AND
-min(criterion scores) >= min_criterion_score`, both from config -- and is **not**
-in the judge's output schema. A judge-declared boolean would be an uncalibrated
-fourth judgment with no anchors, and it would make the bar un-retunable without
-re-spending the whole suite. Because the aggregator recomputes it, `replay` can
-answer "what would the pass rate have been at threshold 3?" from the log alone.
+### What needs an API key
 
-## Bias handling
+| Runs with **no key at all** | Needs a key |
+|---|---|
+| **All 200 tests** | Any live judging |
+| Every aggregation and statistic | |
+| `replay` — rebuilds reports from the log | |
 
-Three checkboxes per bias: named, mitigated in code, measured. A README paragraph
-without a code path and a number satisfies none of them.
+---
 
-| Bias | Mitigated in code by | Measured by |
+## The five biases
+
+Each is marked for all three requirements: **identified**, **mitigated in code**, **measured**.
+
+### 1. Position bias
+
+- **Mitigation** — every pair judged in both orders; disagreement resolves to
+  `Tie (Position Inconsistency)` rather than picking a side.
+- **Measured** — flip rate **0.0**, plus a 5-probe noise floor using byte-identical outputs.
+
+The remap that maps the reversed winner back is an **involution**, so applying it twice silently
+*inverts* the consistency verdict while looking correct. There is exactly one call site
+repo-wide, and a test asserts it.
+
+The noise-floor probes set `bypass_cache=True`. Without it, identical outputs produce a
+byte-identical prompt, the second call is a guaranteed cache hit, and the control reports one
+observation as two — manufacturing a position flip that never happened.
+
+### 2. Verbosity bias
+
+- **Mitigation** — anti-verbosity clause in the rubric; `completeness` narrowed so thoroughness
+  is not double-counted.
+- **Measured** — ρ = +0.309 against a **gold baseline of +0.537**, plus 6 padded-answer probes.
+
+Correcting against the gold baseline costs zero API calls: both vectors are already on disk.
+
+### 3. Self-enhancement bias
+
+- **Mitigation** — cross-family invariant enforced as a **startup assertion**, derived from the
+  model portion rather than the routing prefix. The vacuous-truth hole (an empty candidate list
+  makes `all(...)` trivially true) is explicitly closed, and unknown families are refused.
+- **Measured** — `measure-self-enhancement` runs the same suite under a deliberately same-family
+  judge and reports the win-rate delta with an exact McNemar test.
+
+### 4. Sycophancy / style bias
+
+- **Mitigation** — rationale-before-score enforced **structurally**, through schema field order
+  propagated into the wire schema from `model_fields`, so prompt, schema and parser cannot drift
+  apart. Asking a model nicely to reason first is not a mitigation; making score-first
+  unparseable is.
+- **Measured** — 6 confidently-wrong probes with terse-correct controls.
+
+### 5. Score clustering
+
+- **Mitigation** — few-shot 1/3/5 anchors on all six criteria, loaded from versioned YAML.
+- **Measured** — standard deviation **1.680**, Shannon entropy **1.927 bits**, modal share 44%,
+  top-two share 50%, plus a full histogram.
+
+"We added anchors" is not a measurement. "Scores collapsed to 4-or-5 on X% of cases without
+anchors and Y% with" is.
+
+---
+
+## Judging design
+
+Six criteria in [`config/rubric.yaml`](config/rubric.yaml), each with a description, **1/3/5
+anchors**, and a documented reason for existing:
+
+`correctness` · `faithfulness` · `completeness` · `instruction_following` · `tone` · `safety`
+
+Two design choices worth calling out:
+
+- **`tone` is isolated** so style cannot leak into `correctness`.
+- **`safety` is scored bidirectionally** — over-refusal is penalised, not just harm.
+
+**`passed` is computed in code**, never self-declared. The schema's `extra="forbid"` makes a
+judge-emitted `passed` field *unparseable*, and the prompt forbids it explicitly. A self-declared
+boolean is an uncalibrated threshold hiding inside a verdict.
+
+### Malformed output
+
+The repair loop is a **genuine repair**, not a retry: it appends the malformed text **and** the
+parser's error, so the second request differs materially from the first. A `tenacity` decorator
+re-issues identical arguments and structurally cannot do this — and the test asserts the request
+changed, so a decorator-based implementation would fail it.
+
+Truncation (`finish_reason == "length"`) is handled separately: the token budget **doubles**
+(capped at 8192) and the model is asked for shorter rationales. Echoing the truncated text back
+makes the prompt longer while the output budget stays fixed, guaranteeing every remaining attempt
+also truncates — and since the cases that truncate are the verbose ones, that silently biases the
+pass rate toward short answers.
+
+---
+
+## Statistics
+
+Every estimator in [`src/stats.py`](src/stats.py) was verified against a reference implementation:
+
+| Method | Verification |
+|---|---|
+| Quadratic-weighted Cohen's κ | Matches a from-scratch implementation to **1e-12** |
+| Percentile bootstrap | Resampling unit is the **case**; seeded; degenerate resamples dropped |
+| Wilson interval | Brute-forced over n≤100 × all x × 3 confidence levels — **0 mismatches** |
+| Clopper-Pearson | Verified by its *defining* tail property — **0 violations** |
+| ICC(1,1) | Matches `(MSB−MSW)/(MSB+(k−1)MSW)` exactly |
+| Wilcoxon signed-rank | Ordinal-appropriate; zeros dropped; undefined case named |
+| Exact McNemar | Two-sided binomial on discordant pairs only |
+| Holm–Bonferroni | Genuinely step-down; adjusted p-values non-decreasing |
+
+`labels` is always passed explicitly to κ. sklearn weights on a label's **position** in the array,
+so inferring the class set from observed values collapses the gaps: with observed `{1, 2, 5}`, the
+distance from 2 to 5 becomes 1 instead of 3, and a two-point disagreement is charged as one.
+
+**Why Holm matters here:** ~15 comparisons at α=0.05 carry a family-wise error rate near 54%. At
+these sample sizes the honest outcome is usually that most effects stop being significant — that
+is a finding, not a weakness, and it is reported rather than quietly dropped.
+
+---
+
+## Audit trail
+
+Every judge call is logged **per attempt**, including failures: prompt, raw response, token
+counts, latency, cost. Secrets are redacted; the log is append-only.
+
+```bash
+python main.py replay <run_id> --stage run --report results/suite_report.json
+```
+
+`replay` rebuilds the report from `logs/verdicts.jsonl` **alone** and diffs it against the
+committed file, exiting non-zero on mismatch. A committed result that does not follow from the log
+is therefore a test failure rather than a matter of trust.
+
+The effective mitigation set is recorded *in* each verdict, so replaying a `--mitigations off`
+ablation run against an on-config still matches — previously it reported MISMATCH on a perfectly
+intact log.
+
+---
+
+## Deployment gating
+
+```bash
+python main.py gate --baseline results/previous_validation.json
+```
+
+Gates on instrument **regression**, not absolute quality:
+
+| Check | Blocking | Rule |
 |---|---|---|
-| Position | `mitigations.evaluate_pairwise_unbiased` runs every pair in both orders and resolves disagreement to `Tie (Position Inconsistency)` | flip rate = inconsistent / completed pairs, **and** the noise-corrected estimate `flip_rate(swapped) - flip_rate(same-order repeat)`, **and** the non-Tie rate over byte-identical pairs |
-| Verbosity | anti-verbosity clause in `rubric.yaml` (ablatable), padded-vs-concise probes | Spearman rho between `len(model_output)` and `overall_score` across the suite, with and without the clause (zero extra API calls -- the lengths and scores are already logged), plus the padded-probe pass rate in both conditions |
-| Self-enhancement | judge family != every candidate family, enforced as a hard startup assertion on the **model** portion of the id | win-rate delta between the cross-family judge and `groq/openai/gpt-oss-120b` judging identical content |
-| Sycophancy / style | `rationale` precedes `score` in the schema, so under constrained decoding the evidence must be emitted first; confidently-wrong and terse-but-correct probes | per-category probe pass rate with Wilson intervals (6 sycophancy probes, 5 prompt-injection probes) |
-| Score clustering | few-shot anchors at 1/3/5 per criterion (ablatable) | overall-score std dev, modal share, Shannon entropy and 4-or-5 share, with anchors and without |
+| Coverage | ✅ | Completed pairs ≥ 50% of the suite |
+| Flip rate | ✅ | ≤ 0.20 — above it, the judge cannot resolve this suite |
+| Probe regression | ✅ | No category below its baseline's **Wilson lower bound** |
+| Gold agreement (κ) | ❌ advisory | Reported, never blocking |
 
-Two of the five are not flag-ablatable and the report says so rather than
-implying an ablation that did not happen. Rationale-first is the schema's field
-order; turning it off means shipping a second schema, so the probes measure it
-instead. Cross-family judging is which models you call; its "before" condition is
-a different judge, which is why it has its own command.
+Comparing probe **point estimates** would fire on ordinary sampling noise at 5–6 probes per
+category; comparing against the interval only fires when the drop exceeds what noise explains.
 
-### Why the field order is the mitigation
+Gold agreement is deliberately non-blocking. At n=15 with no established intra-rater ceiling, an
+absolute quality bar is a number this design cannot defend — and a gate nobody trusts gets
+switched off, after which nothing is gated at all.
 
-Under constrained decoding a model emits JSON fields in schema order. A schema
-declaring `score` before `rationale` makes the judge commit to a number before
-generating any reasoning, and the rationale becomes post-hoc rationalisation --
-which silently voids the grounding mitigation while every prompt still *claims*
-it. So `CriterionScore` is `(rationale, score)`, `PointwiseVerdict` is
-`(criteria_breakdown, overall_rationale, overall_score)`, `PairwiseVerdict` is
-`(rationale, winner)`, the wire schema sent to the provider is generated from
-those models rather than hand-written, and there is a test asserting
-`list(CriterionScore.model_fields) == ["rationale", "score"]`.
+---
 
-### Why family, not provider
+## Testing
 
-Under litellm the routing prefix is not the model lineage. `groq/openai/gpt-oss-120b`
-is routed by Groq and is family **openai**; `bedrock/anthropic.claude-3` is routed
-by Bedrock and is family **anthropic**. A check written against the routing prefix
-would compare "gemini" to "groq", pass for the wrong reason, and keep passing
-after someone swapped the judge to a Groq-served Gemini -- exactly the pairing the
-invariant exists to prevent. `derive_family` matches on the model portion, and
-`all()` over an empty candidate list is guarded too, since it is vacuously true:
-a non-empty `candidates` list or an explicit `generator_family:` is required
-before the mitigation may be claimed. The resolved families are written into every
-report so the claim is auditable rather than asserted. The deliberate same-family
-run needs `--allow-same-family`, which is recorded as a waiver in the report.
-
-### Position bias: a worked example
-
-Case `cmp-03`, "Is it safe to run `git push --force` on a shared branch?"
-
-* **Forward call** -- A = the hedging v1 answer, B = the direct v2 answer. Judge
-  returns `{"rationale": "...B states the consequence and names --force-with-lease...", "winner": "Model_B"}`.
-* **Reverse call** -- the same case with the outputs swapped, so the v2 answer is
-  now presented as `Model_A`. Judge returns `{"rationale": "...", "winner": "Model_A"}`.
-* **Remap** -- a reverse verdict of `Model_A` means the output shown second in the
-  original frame won, i.e. `Model_B`. `remap_reverse_winner("Model_A") -> "Model_B"`.
-* **Resolve** -- forward `Model_B` == remapped `Model_B`, so `final_winner = "Model_B"`,
-  `position_consistent = true`, and the pair does not count toward the flip rate.
-
-Had the reverse call returned `Model_B` instead, the remap would give `Model_A`,
-the two orders would disagree, and the pair would resolve to
-`Tie (Position Inconsistency)`: excluded from both win counts, counted in the
-flip rate, and visible in the report. If either order fails after retries the
-pair is excluded from the win counts **and** from the flip-rate denominator and
-counted as `incomplete_pairs` -- never resolved from the one surviving order,
-which would silently reintroduce the bias the protocol exists to remove.
-
-## Judge validation
-
-Three independent numbers, because they answer different questions and a judge
-can be consistently wrong or accurate-on-average but noisy case by case.
-
-**Agreement.** 15 hand-labelled cases in `data/gold_labels/human_annotated.json`.
-I labelled them myself, against the same rubric, one criterion at a time, before
-running any judge -- labels chosen after seeing judge output turn validation into
-confirmation. The file discloses the labeller, the procedure and four caveats,
-including the one that matters most: I also authored the outputs being labelled,
-so the intended defect is more salient to me than it would be to a blind rater.
-
-Kappa is quadratic-weighted with `labels=[1,2,3,4,5]` always passed explicitly,
-and never reported alone: alongside it go the 5x5 confusion matrix, both marginal
-distributions, raw percent agreement, within-one agreement, Spearman rho, and a
-2,000-resample percentile bootstrap CI. The interpretation rule is pre-committed
-in `stats.py::interpret_kappa` rather than chosen after seeing the number -- low
-kappa + high raw agreement + concentrated marginals is marginal skew, not judge
-failure; low kappa + high rho means mis-calibrated (fixable by moving the anchors
-or the threshold); low kappa + low rho means unreliable (not fixable by
-calibration). A rater with fewer than two distinct labels yields `kappa: null`
-and a stated reason, never `NaN`. At n=15 the interval dominates the estimate --
-a +-0.10 half-width needs roughly 100 items -- so the interval is the result.
-
-**Test-retest.** The same suite k=5 times at T=0.7, reporting ICC(1,1) on the
-unrounded overall score first and the pass/fail flip rate second, labelled as the
-threshold artifact it is: a judge with tiny noise sitting on the pass boundary
-shows a huge flip rate, and one with large noise far from it shows zero. The
-cache is bypassed for these calls, since a cache keyed on the prompt would return
-byte-identical responses and manufacture a perfect 0% flip rate -- the meaningless
-validation number this protocol exists to avoid. The config refuses T=0 unless
-you pass `--acknowledge-t0`. And because modern serving stacks are not
-bit-deterministic, even T=0 normally shows a small non-zero flip rate: *exactly*
-0.0 sets `sampling_warning` and reports how many cases produced byte-identical
-rationales, which is the signature of a temperature setting that never took
-effect.
-
-**Adversarial probes.** 27 probes across five categories in
-`data/test_suites/adversarial_probes.json`, every one carrying a pre-registered
-numeric bound so that "the judge passed" is a test rather than a story told
-afterwards. Pass rates are reported per category with Wilson intervals; n=1 per
-category yields 0% or 100% and is not a measurement.
-
-* **verbosity** (6) -- padded vs concise, scored **only on correctness and
-  faithfulness**, where the pair is stipulated identical. Scoring all six would
-  confound the bias signal with a real quality difference, since a padded answer
-  legitimately differs on completeness, instruction-following and tone.
-* **sycophancy** (6) -- three confidently-wrong (polished, authoritative, false)
-  and three terse-but-correct controls.
-* **position_noise_floor** (5) -- byte-identical pairs; the non-Tie rate is an
-  assumption-free estimate of pure position plus sampling bias.
-* **over_correction** (5) -- thorough-and-better vs terse-and-incomplete, where
-  the *longer* answer must win. Without these you can score 100% on everything
-  else by cranking the anti-verbosity clause until the judge can no longer reward
-  legitimate thoroughness.
-* **prompt_injection** (5) -- an injected verdict object, a fake system block, a
-  delimiter-escape attempt, a replacement rubric, and a social-engineering
-  appeal. Judged content is wrapped in per-request nonce delimiters with the
-  nonce stripped from the content first, and the rubric tells the judge that an
-  output trying to manipulate its evaluator is a defect, not a compliment.
-
-## A/B comparison
-
-`compare-configs` runs the full pairwise-with-order-swap protocol over
-`data/test_suites/comparison_qa.json` (prompt v1 vs v2) and applies this rule,
-which lives in `aggregator.py::decide_winner` and is quoted verbatim into every
-report:
-
-```
-# Step 1 -- validity gate. Evaluated FIRST and short-circuiting.
-if flip_rate > 0.20: return "Judge unreliable on this suite - no winner declared"
-
-# Step 2 -- effect. resolved = wins_a + wins_b (excludes ties AND inconsistent pairs)
-if wins_b / resolved > 0.55: winner = config B
-elif wins_a / resolved > 0.55: winner = config A
-else: winner = "Inconclusive - no significant difference"
+```bash
+python -m pytest                        # 200 passed, 3 skipped — no API key, no network
+ruff check . && ruff format --check .
 ```
 
-Three things the naive version gets wrong. There is **no mean-score term**: a
-comparison run is pairwise-only and `PairwiseVerdict` carries no numeric score,
-so that criterion would not be computable from the run it is applied to. The
-flip-rate gate is a **precondition on the instrument, not a third criterion on
-the effect** -- ANDing it in would collapse "the judge is untrustworthy" and "the
-two configs are equivalent" into one `Inconclusive`, which are operationally
-opposite conclusions (fix your judge vs. ship either). And the **denominators are
-explicit**: `resolved` excludes ties and inconsistent pairs, the flip-rate
-denominator excludes incomplete pairs, and both appear in the report.
+| Suite | Tests | Covers |
+|---|---:|---|
+| `test_judge.py` | 22 | JSON recovery, genuine repair, truncation escalation, two error layers |
+| `test_aggregator.py` | 20 | Mode selection, tallies, decision rule, coverage gate |
+| `test_datasets.py` | 20 | Suite/gold/probe loading, unsafe-YAML refusal |
+| `test_e2e_mocked.py` | 20 | Every CLI command through the real Typer layer with a fake provider |
+| `test_schema.py` | 18 | Field order, score bounds, `extra="forbid"` |
+| `test_suite_config.py` | 17 | Family derivation, cross-family invariant, routing-prefix trap |
+| `test_stats.py` | 17 | κ `labels` behaviour, both halves of the claim |
+| `test_mitigations.py` | 11 | Order swap, remap, exactly two calls per pair |
+| `test_rate_limit.py` | 9 | TPM pacing, driven by a **fake clock** |
+| `test_gating.py` | 8 | Gate blocking and non-blocking paths |
 
-The 0.20 threshold means "if more than one pair in five reverses on order swap,
-the pairwise signal is too noisy to declare a winner"; it lives in
-`suite_config.yaml` with that rationale attached. The 0.55 threshold is a
-heuristic, not a significance test: at n=25 with a true 50/50 process it fires
-about a third of the time, and 55% would need n around 270 to be significant. So
-the win rate is reported with a Clopper-Pearson interval and the interval is left
-to speak, which at these sample sizes is visibly enormous.
+The 3 skips are `live`-marked and deliberately excluded from CI, so the suite never depends on a
+provider being reachable.
 
-The judge never sees which prompt variant produced which output -- the comparison
-suite carries one shared task instruction and keeps both variants in its
-provenance block. Showing the judge both variants would let it infer provenance
-in a comparison whose entire point is to be blind.
+---
 
-## Engineering notes
+## Cost and quota
 
-**Audit trail.** `logs/judge_calls.jsonl` gets one record per *attempt* --
-repairs and failures included -- with the full message list, the raw response,
-token counts and `latency_ms`, written before parsing is attempted. Both logs are
-append-only by construction. `main.py replay <run_id>` rebuilds the `SuiteReport`
-from `logs/verdicts.jsonl` alone and diffs it against the committed report,
-ignoring only `generated_at` and wall-clock latency; a mismatch exits 2. That
-turns "auditable and replayable" into a property with a test, and the same
-reconstruction backs `--resume` after a mid-run 429.
+Free tier both sides, so the real budget is **quota, not dollars**. Two limits bind, and neither
+is the one people plan for:
 
-**Two error layers, deliberately not merged.** A `tenacity` decorator cannot
-repair JSON: it re-invokes with identical arguments, so the "repair" is a
-re-issue of the prompt that just failed, and a test asserting only "it eventually
-succeeded" passes anyway. The repair loop is an ordinary bounded loop that
-appends the malformed output **and** the parser's error to the message list; the
-test asserts the second request body contains both. Transient failures (429, 5xx,
-connection) are retried by `tenacity` one layer down. Auth, permission and
-bad-request failures are never retried -- inside a per-case loop those retries
-multiply one misconfiguration across the whole suite -- and the error names which
-provider's key to check.
+- **Requests per day.** `gemini-3.5-flash` free tier allows **20/day** — measured from this
+  pipeline's own audit log, since Google no longer publishes the figure. Against a validation
+  suite needing ~370 calls that is ~19 days per run, which is why the judge runs on Groq.
+- **Tokens per minute.** `llama-3.3-70b-versatile` allows **12,000 TPM** while one judge call
+  costs ~4,600 tokens — about **2.6 calls/minute**, regardless of the 30 requests/minute the same
+  tier advertises. Concurrency makes it worse, not better: two in-flight calls request ~9,200
+  tokens at once and trip the limit. Measured — 7 of 18 cases lost at concurrency 2, 18 of 18 at
+  concurrency 1.
 
-**Cost.** Free tier both sides, so the real budget is quota, not dollars. A disk
-cache keyed on `sha256(model, messages, params)` makes development re-runs free;
-`--max-calls-per-run` and `--max-cost-usd` are circuit breakers checked *before*
-each request; **reasoning** models set `reasoning_effort="low"` and
-`include_reasoning=False`, since reasoning tokens bill as output and at default
-effort can halve a day's budget. That is gated on the model, not the provider --
-Groq also serves non-reasoning models that reject those parameters with a fatal
-400. Tokens are summed across every attempt, so repaired calls are not invisible,
-and each report prints what the run *would* have cost on a paid tier. "We did not
-track cost because it was free" misses the point of the requirement.
+Client-side token pacing reduced the refusal rate from **83% to 12%**.
 
-**Quota, measured rather than assumed.** Two limits bind, and neither is the one
-people plan for:
+---
 
-- **Requests per day.** `gemini-3.5-flash` free tier allows **20/day**, which is
-  why it is not the judge. Groq allows 1,000/day for the model that is.
-- **Tokens per minute.** This is the real ceiling for this workload.
-  `llama-3.3-70b-versatile` allows **12,000 TPM** while one judge call costs
-  ~4,600 tokens — about **2.6 calls/minute**, regardless of the 30 requests/minute
-  the same tier advertises. Running two calls concurrently simply requests ~9,200
-  tokens at once and trips the limit: a measured run lost 7 of 18 cases that way,
-  and the same suite scored 18 of 18 at concurrency 1. `max_concurrent_judge_calls`
-  is therefore 1, and the retry backoff ceiling exceeds the longest `retryDelay`
-  either provider asks for.
+## Limitations
 
-**Config hygiene and data policy.** Model names in YAML, keys only in `.env`
-(gitignored), `yaml.safe_load` everywhere. Free tiers generally reserve the right
-to train on submitted content and to permit human review, so nothing confidential
-should go through this pipeline; these suites are synthetic and mine. Google's
-free tier additionally is unavailable in the EEA, Switzerland and the UK — less
-binding now that the judge runs on Groq, but still relevant to anyone reproducing
-the Gemini comparison in `measure-self-enhancement`.
+Stated plainly, because a reviewer will find them anyway:
 
-## Discussion
+- **n=15 gold set.** A quadratic-weighted κ at that size routinely carries a 95% CI spanning most
+  of the Landis–Koch range, from *fair* to *almost perfect*.
+- **No washout re-label**, so the **ceiling** on judge–human agreement is unknown. κ 0.55 against a
+  labeller whose own self-agreement is 0.60 is a completely different result from 0.55 against a
+  labeller at 0.95, and this design cannot tell them apart. The code path is live — populate
+  `overall_score_relabel` and it computes.
+- **The sole labeller also wrote the outputs being labelled**, which probably makes these labels
+  cleaner than a realistic human gold set, biasing agreement in a direction I cannot sign.
+- **Self-enhancement confounds family with capability.** Two judges differ in more than lineage, so
+  the win-rate delta is an upper bound, not an estimate. Disentangling it needs three judges
+  spanning two families.
+- **The A/B result above has insufficient coverage** — see [Results](#results).
+- **The pooled criterion κ bootstraps at the wrong unit**: (case, criterion) rows are resampled
+  independently, breaking within-case clustering, so that interval is anti-conservative. It is
+  labelled secondary and descriptive for exactly this reason.
 
-**How biased is the judge before vs after?** `run-ablation` is the only thing
-that answers this, and it answers it per bias: it runs the suite with the three
-ablatable mitigations on and off and emits `bias_ablation_report.json` with a
-before/after column each. For position bias, the "before" condition is a
-single-order run, which always produces a decisive-looking winner -- the flip rate
-is exactly the share of those winners that were artifacts. For verbosity, it is
-the length-score Spearman rho with and without the clause. For clustering, it is
-the score distribution with and without anchors. I have not run it, so I am not
-going to characterise the direction or size of any of those deltas here.
+**Would I let this gate a release?** Not on absolute quality at this sample size — and I would
+rather say that than perform confidence. As a **pre-merge signal** plus the two regression gates
+above, yes.
 
-**Would I let this gate a release?** Not on the numbers this design can produce
-at this sample size, and I would rather say that than perform confidence. Three
-reasons, all structural rather than contingent on how the run turns out.
+---
 
-First, n=15 for the gold set is not a decision-grade sample. A quadratic-weighted
-kappa at that size routinely carries a 95% CI spanning most of the Landis-Koch
-range, from *fair* to *almost perfect*. A gate needs to know which one it has.
-
-Second, my gold labels have no established ceiling. I did not perform the washout
-re-label, so intra-rater reliability is unknown, and kappa 0.55 against a labeller
-whose own self-agreement is 0.60 is a completely different result from 0.55
-against a labeller at 0.95. The design cannot distinguish them. The code path is
-live -- populate `overall_score_relabel` and it computes -- so this is a gap I
-chose not to close in the time available, not one I could not close.
-
-Third, the sole labeller also wrote the outputs being labelled. That makes the
-intended defect in each case more salient to me than it would be to a blind
-rater, which probably makes these labels cleaner and more internally consistent
-than a realistic human gold set. It biases the agreement measurement in a
-direction I cannot sign.
-
-What I would do instead: use it as a **pre-merge signal, not a gate** -- surface
-the verdict on the PR, block on nothing. Then gate on the two things that are
-cheap and unambiguous even with an imperfect judge: a hard stop if the flip rate
-exceeds 0.20 (the judge is telling you it cannot resolve this suite), and a hard
-stop on any adversarial probe category whose pass rate drops below its previous
-run's lower confidence bound. Both are regression signals about the *instrument*,
-which is a much easier thing to be confident about than an absolute quality bar.
-
-**A weakness I would fix first.** The self-enhancement measurement confounds
-family with capability. `llama-3.3-70b-versatile` and `gpt-oss-120b` differ in more
-than lineage, so a win-rate delta between them is an upper bound on self-enhancement
-rather than an estimate of it -- some of it is simply two different judges having
-different opinions. Disentangling that needs at least three judges spanning two
-families each, which is the ensemble improvement I did not build. I say so in the
-report body rather than in a footnote, because a number presented without its
-confound is worse than no number.
-
-**Second weakness.** `comparison_qa.json` currently ships hand-authored stand-in
-outputs, not real `gpt-oss-120b` generations, because I have not run the generator
-with live credentials. The file says so in its provenance block, every case is
-tagged `source: hand_authored`, and `scripts/generate_candidates.py` regenerates
-it with real output and stamps the model id and timestamp. Until that is run, any
-A/B result is a demonstration of the comparison machinery, not a finding about
-gpt-oss-120b.
-
-## Layout and reproducibility
-
-```
-config/     rubric.yaml (6 criteria, anchors, clauses) + suite_config.yaml
-data/       test_suites/{general_qa, comparison_qa, adversarial_probes}.json
-            gold_labels/human_annotated.json
-src/        schema  errors  suite_config  audit_log  llm_client  judge
-            mitigations  runner  aggregator  validator  stats  ablation  reports
-scripts/    generate_candidates.py  (run once, commit the output)
-tests/      178 offline tests + 3 behind the `live` marker
-main.py     Typer CLI
-```
-
-Dependency direction is enforced, not just documented: `schema` and `errors` have
-no internal imports; `judge` never imports `aggregator` or `validator`;
-`aggregator` is a pure `list[Verdict] -> SuiteReport` reduction with zero I/O and
-zero LLM calls, which is precisely why the pass-rate, win-rate and flip-rate
-arithmetic behind the two largest rubric lines is unit-tested against
-hand-computed fixtures.
-
-Every report records the run id, model id, temperature, resolved model families,
-which mitigations were active, and the exact decision-rule text. Record the run
-date beside any committed number: LLM-judge figures move between runs, and a
-reader who re-runs and sees different ones with no warning will reasonably
-conclude the first set was invented.
+<div align="center">
+<sub>Built by <a href="https://github.com/LEKKALAGANESH">LEKKALA GANESH</a></sub>
+</div>
