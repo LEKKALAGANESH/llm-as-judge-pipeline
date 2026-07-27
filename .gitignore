@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Runtime artifacts. logs/ is append-only audit output and grows without bound;
+# a representative excerpt is committed by hand (see logs/README.md).
+logs/*.jsonl
+.cache/
+
+# results/*.json is deliberately NOT ignored: those files are the deliverable
+# evidence of a real run, and `replay` checks a committed report against the log.

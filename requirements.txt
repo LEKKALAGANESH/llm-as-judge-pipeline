@@ -1,0 +1,18 @@
+# Pinned deliberately: litellm is the single dependency standing between this
+# pipeline and both providers, and its model table drifts fast. A floating
+# version is a silent-breakage vector for the whole run.
+pydantic==2.12.5
+litellm==1.77.3
+tenacity==9.1.2
+scikit-learn==1.8.0
+scipy==1.17.0
+numpy==2.2.4
+pandas==2.3.3
+PyYAML==6.0.2
+typer==0.24.1
+loguru==0.7.3
+python-dotenv==1.2.1
+
+# dev / CI
+pytest==9.0.2
+ruff==0.15.7

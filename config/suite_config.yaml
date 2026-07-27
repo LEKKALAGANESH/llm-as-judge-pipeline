@@ -1,0 +1,149 @@
+# Pipeline configuration. Model names only -- never keys. litellm resolves
+# credentials from the environment (GEMINI_API_KEY, GROQ_API_KEY).
+#
+# The judge/candidate split below is the self-enhancement-bias mitigation and
+# is enforced as a hard startup assertion, not a convention: the judge's model
+# FAMILY (google) must differ from every candidate's family (openai). The check
+# derives family from the model portion of the id, not the litellm routing
+# prefix -- `groq/openai/gpt-oss-120b` is routed by groq but is family openai.
+
+version: "1.0"
+
+run:
+  results_dir: results
+  logs_dir: logs
+  cache_path: .cache/llm_responses
+  # Free-tier quota guard. The run aborts with a clear message rather than
+  # silently burning a day's requests. Counts real API calls only; cache hits
+  # are free and are not counted.
+  max_calls_per_run: 400
+  max_cost_usd: 5.0
+  # 1. The binding free-tier limit for this workload is tokens/minute, not
+  # requests/minute: llama-3.3-70b-versatile allows 12,000 TPM and one judge
+  # call costs ~4,600 tokens, so the ceiling is ~2.6 calls/min however many
+  # requests you are allowed. At concurrency 2 the two in-flight calls request
+  # ~9,200 tokens at once and trip the limit immediately -- measured: 7 of 18
+  # cases lost. Raise this only alongside a higher TPM tier.
+  max_concurrent_judge_calls: 1
+  # Client-side pacing against the provider's tokens-per-minute ceiling, applied
+  # *before* each request. Without it the run discovers the limit by being
+  # refused, and every refusal costs a round trip plus backoff: a measured
+  # pairwise run resolved only 3 of 15 pairs that way. Set to the tier's TPM for
+  # the judge model, or null to disable.
+  tokens_per_minute: 12000
+
+judge:
+  # Family `meta`, against candidates of family `openai` -- the cross-family
+  # invariant that mitigates self-enhancement bias is satisfied by lineage, not
+  # by provider, and `derive_family` reads the model portion rather than the
+  # litellm routing prefix.
+  #
+  # Was gemini/gemini-3.5-flash. Changed on measured evidence, not preference:
+  # Google no longer publishes free-tier limits, and this project's own audit
+  # log recorded `GenerateRequestsPerDayPerProjectPerModel-FreeTier, limit: 20`
+  # for that model -- 20 requests per DAY, against a validation suite that needs
+  # ~370. That is ~19 days per full run, so the free-tier posture this project
+  # claims was not actually achievable on Gemini. Groq bills this model at
+  # 1,000 RPD / 30 RPM on the same free tier.
+  model: groq/llama-3.3-70b-versatile
+  temperature: 0.0
+  max_tokens: 2048
+  # Total structured-parse attempts per judge call: 1 initial + (N-1) repairs.
+  # The repair attempts append the malformed output and the validation error to
+  # the message list -- they are not a re-issue of the same prompt.
+  max_repair_attempts: 3
+  # Transient-only retries (429 / 5xx / connection). Auth, permission and
+  # bad-request failures are never retried.
+  #
+  # 6, not 3: backoff is exponential from 1s, so 3 attempts wait ~3s in total.
+  # A measured Gemini run lost 8 of 18 cases to 429s because the provider asked
+  # for a 34s retryDelay that 3 attempts could not survive. Six attempts cover
+  # ~31s of backoff, which also absorbs Groq's per-minute ceiling.
+  max_transient_retries: 6
+  request_timeout_s: 120
+  structured_output: true
+
+# Deliberately the SAME family as the candidates. Used only by
+# `measure-self-enhancement`, which requires --allow-same-family. The win-rate
+# delta between this judge and the cross-family judge is the self-enhancement
+# estimate.
+self_enhancement_probe_judge:
+  model: groq/openai/gpt-oss-120b
+  temperature: 0.0
+  max_tokens: 2048
+
+# Candidate generators. Only used by scripts/generate_candidates.py -- the eval
+# loop reads pre-generated outputs from data/test_suites/*.json so that Groq's
+# 200K TPD (~111 calls/day) is never spent on repeated evaluation.
+candidates:
+  - label: config_a
+    model: groq/openai/gpt-oss-120b
+    prompt_variant: v1
+  - label: config_b
+    model: groq/openai/gpt-oss-120b
+    prompt_variant: v2
+
+# Belt and braces for the vacuous-truth hole in `all(judge.family != c.family)`:
+# an empty candidate list makes that assertion trivially true. When candidates
+# are omitted (the pre-generated-output flow), this field must be set instead.
+generator_family: openai
+
+scoring:
+  # `passed` is computed here, in code, from these thresholds. The judge never
+  # emits a pass/fail boolean -- a self-declared boolean is an uncalibrated
+  # fourth judgment, and it makes the bar un-retunable without re-spending the
+  # whole suite.
+  pass_threshold: 4        # overall_score >= 4
+  min_criterion_score: 3   # AND min(criterion scores) >= 3
+
+comparison:
+  # Validity gate, evaluated FIRST and short-circuiting: if more than 1 pair in
+  # 5 reverses on order swap, the pairwise signal is too noisy to declare a
+  # winner at all. This is a precondition on the instrument, not a third
+  # criterion on the effect.
+  flip_rate_threshold: 0.20
+  # Effect threshold on the pairwise win rate over resolved pairs.
+  win_rate_threshold: 0.55
+
+validation:
+  gold_labels_path: data/gold_labels/human_annotated.json
+  probes_path: data/test_suites/adversarial_probes.json
+  # Test-retest needs sampling. At T=0 consistency is near-trivial and the
+  # number is meaningless; the loader warns and requires an explicit override.
+  test_retest_runs: 5
+  test_retest_temperature: 0.7
+  # Also measure at the temperature you would actually judge at.
+  test_retest_also_at_judge_temperature: true
+  bootstrap_resamples: 2000
+  bootstrap_seed: 20260726
+  kappa_labels: [1, 2, 3, 4, 5]
+
+mitigations:
+  # `--mitigations off` flips the three ablatable switches below. It does not
+  # flip `rationale_first`, which is the schema's field order and cannot be
+  # disabled without a second schema; its effect is measured by the sycophancy
+  # probes instead. Stated plainly in the README rather than quietly implied.
+  order_swap: true
+  anti_verbosity_clause: true
+  few_shot_anchors: true
+  rationale_first: true   # structural; informational only
+
+# Used for the paid-tier cost estimate in the suite report. Both providers are
+# free tier here, so the dollar figure is counterfactual by construction and is
+# labelled as such.
+# List prices, as_of 2026-07-27. Sources: https://groq.com/pricing and
+# https://ai.google.dev/gemini-api/docs/pricing. Runs here are on free tiers, so
+# these drive the counterfactual "what this would have cost" figure only.
+pricing_usd_per_million_tokens:
+  groq/llama-3.3-70b-versatile:
+    input: 0.59
+    output: 0.79
+  gemini/gemini-3.5-flash:
+    input: 0.30
+    output: 2.50
+  groq/openai/gpt-oss-120b:
+    input: 0.15
+    output: 0.60
+  groq/openai/gpt-oss-20b:
+    input: 0.10
+    output: 0.50

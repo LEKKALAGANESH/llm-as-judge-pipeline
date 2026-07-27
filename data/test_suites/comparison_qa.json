@@ -1,0 +1,182 @@
+{
+  "suite_id": "comparison_qa_v1",
+  "description": "A/B suite for the prompt-v1 vs prompt-v2 comparison. 15 pairs. The judge is shown only the shared task instruction, never the two system-prompt variants -- showing it both variants would let it infer which arm produced which output, which is provenance leakage in a comparison whose whole point is to be blind.",
+  "config_a_label": "prompt_v1_baseline",
+  "config_b_label": "prompt_v2_direct",
+  "provenance": {
+    "generator_model": "groq/openai/gpt-oss-120b",
+    "generator_family": "openai",
+    "config_a_prompt": "You are a helpful assistant. Answer the user's question.",
+    "config_b_prompt": "You are a helpful assistant. Answer the user's question directly in the first sentence, then give at most two sentences of supporting detail. Say explicitly when you are uncertain or when the answer depends on something you were not told. Do not write a preamble, restate the question, or add a closing summary.",
+    "source": "HAND-AUTHORED STAND-IN, not model output. These pairs were written by the repository author so that the pipeline is runnable and demonstrable without provider credentials. Run `python scripts/generate_candidates.py` with GROQ_API_KEY set to overwrite this file with real gpt-oss-120b output; the script stamps each case with the model id and timestamp that produced it. Any A/B result computed from THIS committed file is a demonstration of the comparison machinery, not a finding about gpt-oss-120b, and the README says so.",
+    "regenerate_command": "python scripts/generate_candidates.py --out data/test_suites/comparison_qa.json",
+    "authored_at": "2026-07-26"
+  },
+  "cases": [
+    {
+      "case_id": "cmp-01",
+      "input": "Should I use a UUID or an auto-incrementing integer for my primary key?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "That's a really good question and one that comes up constantly in schema design. There are a lot of considerations here. UUIDs are globally unique, which is handy in distributed systems, and they don't leak row counts. Auto-incrementing integers are smaller and index more efficiently. There are arguments on both sides and reasonable engineers disagree, so ultimately it depends on your use case and requirements.",
+      "output_b": "Use an auto-incrementing integer unless you specifically need to generate ids outside the database. Integers are half the width, cluster well in a B-tree, and keep index maintenance cheap; random UUIDv4 primary keys fragment the index and inflate every secondary index that references them. If you do need client-generated ids, use UUIDv7, which is time-ordered and avoids most of that cost.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-02",
+      "input": "My API returns 502 intermittently. Where do I start?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Intermittent 502s can be caused by a wide variety of things, and debugging them can be frustrating. It could be your load balancer, your application server, a timeout mismatch, a deploy, a resource limit, or something upstream. I'd suggest checking your logs and monitoring to narrow it down.",
+      "output_b": "Start at the proxy, because a 502 is the proxy telling you the upstream failed or timed out, not the application reporting its own error. Compare the proxy's upstream timeout against your slowest endpoint's p99, since a timeout mismatch is the single most common cause. Then check whether the 502s cluster around deploys or restarts, which would point at connection draining instead.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-03",
+      "input": "Is it safe to run `git push --force` on a shared branch?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Force pushing is one of those operations that carries some risk. On a shared branch it can overwrite other people's commits, which is generally considered bad practice, although there are situations where it's necessary. Many teams have policies about this.",
+      "output_b": "No. On a shared branch it discards commits other people have already based work on, and they will only find out when their next pull fails. Use `--force-with-lease` if you must rewrite, which refuses the push if the remote moved since you last fetched.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-04",
+      "input": "How do I decide between REST and GraphQL for a new internal service?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Both are solid choices with different strengths. REST is simple, well understood, cacheable at the HTTP layer, and every tool speaks it. GraphQL gives clients precise control over the shape of the response, which helps when you have many client types with different needs, but it adds server complexity and makes caching and rate limiting harder. For an internal service with a small number of known consumers, REST is usually the lower-friction default; GraphQL earns its complexity when you have many divergent clients or a deeply nested domain.",
+      "output_b": "Default to REST for an internal service. GraphQL's advantage is letting many divergent clients shape their own responses, which an internal service with a handful of known consumers does not need, and it costs you HTTP caching and straightforward rate limiting.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:a_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-05",
+      "input": "What's the difference between authentication and authorisation?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Authentication is about who you are; authorisation is about what you're allowed to do. Authentication happens first: the system establishes your identity, usually via a credential. Authorisation then decides whether that identity may perform the requested action.",
+      "output_b": "Authentication establishes who you are; authorisation decides what that identity may do. Authentication runs first and produces a verified principal, and authorisation is the check that runs on every subsequent request against that principal.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:tie"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-06",
+      "input": "Our test suite takes 40 minutes. What should I look at first?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Slow test suites are a common problem and there are lots of possible causes. You might have too many integration tests, slow fixtures, no parallelism, or tests hitting real services. Profiling the suite would be a sensible first step.",
+      "output_b": "Profile first and sort tests by duration, because slow suites are almost always a long tail of a few offenders rather than uniform slowness. Then check whether your slowest tests are talking to a real database or network, which is the usual culprit, and whether the runner is using more than one core.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-07",
+      "input": "Explain the difference between a process and a thread.",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "A process is an instance of a running program with its own memory space, file descriptors and other resources. A thread is a unit of execution inside a process; threads within a process share the same address space and resources, which makes communication between them cheap but also means one thread can corrupt another's data. Processes are isolated from each other by the operating system, so a crash in one does not directly take down another, whereas a crash in a thread typically takes down the whole process.",
+      "output_b": "A process has its own memory space; threads live inside a process and share it. That sharing makes inter-thread communication cheap and inter-thread bugs expensive, and it means a fatal error in one thread usually kills the whole process.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:a_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-08",
+      "input": "Should I store money as a float?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Storing money as a floating point number is generally discouraged because of precision issues. Binary floating point can't represent many decimal fractions exactly, which can lead to small errors. Most people recommend using a decimal type or integer minor units instead.",
+      "output_b": "No. Binary floating point cannot represent 0.10 exactly, so sums drift and comparisons fail in ways that surface as one-cent discrepancies in reconciliation. Store integer minor units (pence, cents) or use your database's exact DECIMAL type.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-09",
+      "input": "What does `SELECT ... FOR UPDATE` do?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "It's a locking read. It takes a row-level lock on the rows the select returns, so other transactions that try to lock or modify those rows will block until your transaction commits or rolls back. It's typically used to implement read-modify-write safely.",
+      "output_b": "It takes a row-level write lock on every row the query returns, so concurrent transactions block on those rows until yours ends. Use it when you are about to read a value and write it back and cannot tolerate a lost update.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:tie"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-10",
+      "input": "How many retries should I configure for an idempotent HTTP call?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "This really depends on your situation. Common values are two or three retries with exponential backoff. You'll want to consider your latency budget, the downstream service's capacity, and whether the call is genuinely idempotent.",
+      "output_b": "Three total attempts with exponential backoff and jitter is a reasonable default, though the right number depends on your latency budget, which I was not told. Cap total elapsed time rather than only the attempt count, and never retry a 4xx other than 429.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-11",
+      "input": "Is it worth adding a caching layer in front of our database?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Caching can dramatically improve read performance and reduce database load, so it's often worth it. However, it introduces invalidation complexity, and cache invalidation is famously one of the hard problems in computer science. You should measure first.",
+      "output_b": "Measure before adding one: a cache is only worth its invalidation cost if reads dominate and the same keys are read repeatedly, and I do not know your read/write mix. If your slow queries are slow because of missing indexes, a cache hides the problem rather than fixing it.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-12",
+      "input": "What is the N+1 query problem?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "The N+1 query problem happens when you run one query to fetch a list of records and then one additional query per record to fetch related data, so fetching 100 orders with their customers becomes 101 queries. It's especially common with ORMs and lazy loading. The fix is usually eager loading or a join.",
+      "output_b": "It is fetching a list with one query and then issuing one more query per row to load a relation, so 100 rows cost 101 round trips. Fix it with eager loading or a join, and catch it by logging query counts per request.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:tie"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-13",
+      "input": "Our on-call engineer keeps getting paged at 3am for the same alert. What should we do?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "Alert fatigue is a serious problem and it burns people out. You should look at whether the alert is actionable, whether the threshold is right, and whether the underlying issue can be fixed. Many teams find that reviewing their alerts regularly helps a lot.",
+      "output_b": "Fix or delete the alert, in that order. An alert that fires repeatedly without anyone taking action at 3am is by definition not urgent, so either it should be a ticket that waits until morning or the underlying fault should be fixed; leaving it as a page trains the on-call to ignore pages.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-14",
+      "input": "Explain how OAuth 2.0 authorisation code flow works, including why PKCE exists.",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "The client redirects the user to the authorisation server, where the user authenticates and consents. The authorisation server redirects back to the client with a short-lived authorisation code. The client then exchanges that code, plus its client secret, for an access token over a back-channel request, so the token never travels through the browser. PKCE exists because public clients such as mobile and single-page apps cannot keep a client secret. The client generates a random verifier, sends its hash with the initial request, and presents the original verifier at the token exchange, which proves the same client that started the flow is finishing it and defeats interception of the authorisation code.",
+      "output_b": "The user is redirected to the authorisation server, which sends back a short-lived code that the client exchanges for a token over a back channel. PKCE exists because public clients cannot hold a secret, so the client proves continuity with a hashed verifier instead.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:a_better"],
+      "source": "hand_authored"
+    },
+    {
+      "case_id": "cmp-15",
+      "input": "Can I use `SELECT *` in production code?",
+      "system_prompt": "Answer the user's question.",
+      "output_a": "It's generally discouraged in production code. Using SELECT * means your query returns whatever columns happen to exist, which can break when the schema changes, and it may transfer more data than you need. Explicit column lists are usually preferred.",
+      "output_b": "Avoid it in application code: the result shape changes silently when someone adds a column, which breaks positional access and quietly increases transfer size. It is fine in an interactive session where you are looking at the data yourself.",
+      "config_a_label": "prompt_v1_baseline",
+      "config_b_label": "prompt_v2_direct",
+      "tags": ["expected:b_better"],
+      "source": "hand_authored"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+[project]
+name = "llm-as-judge-pipeline"
+version = "1.0.0"
+description = "LLM-as-judge evaluation pipeline with measured bias mitigation and judge validation."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "logs", "results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line length is handled by the formatter, not the linter
+    "B008",   # typer uses function calls in argument defaults by design
+    "SIM108", # ternaries are not always clearer than an if/else here
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "live: hits a real provider API and consumes free-tier quota (deselected in CI)",
+]
