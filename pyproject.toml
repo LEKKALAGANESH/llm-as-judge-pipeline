@@ -2,11 +2,16 @@
 name = "llm-as-judge-pipeline"
 version = "1.0.0"
 description = "LLM-as-judge evaluation pipeline with measured bias mitigation and judge validation."
-requires-python = ">=3.10"
+# 3.11, not 3.10. The pinned scientific stack sets the real floor: both
+# scikit-learn 1.8.0 and scipy 1.17.0 declare Requires-Python >=3.11, so a 3.10
+# install cannot resolve and the CI job for it could never have passed.
+# Declaring a floor the dependency set does not support is a claim, not a
+# capability -- the honest move is to state the version that actually works.
+requires-python = ">=3.11"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 exclude = [".venv", "logs", "results"]
 
 [tool.ruff.lint]

@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -103,7 +103,7 @@ def main() -> int:
         )
         return resp.text.strip()
 
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    stamp = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     out_cases = []
     for i, case in enumerate(cases, start=1):
         print(f"  [{i}/{len(cases)}] {case.case_id}: {case.input[:60]}...")

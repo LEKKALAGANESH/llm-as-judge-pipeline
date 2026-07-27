@@ -5,7 +5,7 @@
 **An LLM-as-judge evaluation pipeline that takes judge bias seriously — naming it, mitigating it in code, and *measuring* it.**
 
 [![tests](https://img.shields.io/badge/tests-200%20passed-brightgreen)](#testing)
-[![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)](pyproject.toml)
+[![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](pyproject.toml)
 [![ruff](https://img.shields.io/badge/ruff-clean-brightgreen)](pyproject.toml)
 [![offline](https://img.shields.io/badge/tests-no%20API%20key%20needed-informational)](#testing)
 [![replay](https://img.shields.io/badge/audit%20trail-replay%20verified-success)](#audit-trail)
