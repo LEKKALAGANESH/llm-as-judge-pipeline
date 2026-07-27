@@ -176,6 +176,13 @@ anchors and Y% with" is.
 
 ## Judging design
 
+<p align="center">
+  <img src="docs/architecture.png" alt="Judging pipeline: suite input, prompt construction, judge call, verdict parsing with a repair loop, position swap, aggregation gates, and suite report" width="900">
+</p>
+
+The full execution pipeline, with each bias mitigation marked where it is
+applied. Vector source: [`docs/architecture.svg`](docs/architecture.svg).
+
 Six criteria in [`config/rubric.yaml`](config/rubric.yaml), each with a description, **1/3/5
 anchors**, and a documented reason for existing:
 
